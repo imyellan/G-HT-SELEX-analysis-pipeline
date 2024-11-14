@@ -10,17 +10,20 @@ reimport_bmarks <- ifelse(Sys.info()["sysname"] == "Darwin",
                           F, as.logical(commandArgs(trailingOnly = T)[1]))
 
 import_benchmark_summ <- function(bmark_path){
-  pTH <- gsub(".*_(pTH[0-9]+)_.*", "\\1", bmark_path)
+  pTH <- ifelse(grepl("PEAKS", bmark_path), 
+                basename(dirname(bmark_path)),
+                gsub(".*_(pTH[0-9]+)_.*", "\\1", bmark_path))
   motif <- gsub("_[0][0-9]+", "", gsub("_eval_summ.txt", "", basename(bmark_path)))
-  bmark_pos_frac <- gsub("^0", "0.", gsub(".*_([0][0-9]+)_.*", "\\1", basename(bmark_path)))
+  bmark_pos_frac <- gsub("^0", "0.", 
+                         gsub(".*_([0][0-9]+)_.*", "\\1", basename(bmark_path)))
   cycle <- ifelse(grepl("merged", bmark_path), "merged",
                   ifelse(grepl("PEAKS", bmark_path), "MAGIX", 
                          ifelse(grepl("Cycle", bmark_path), 
                                 gsub(".*_Cycle([1-3]).*", "\\1", bmark_path),
                                 gsub(".*_A_([1-3])_.*", "\\1", bmark_path))))
-  well <- ifelse(grepl("MAGIX", bmark_path), "MAGIX",
+  well <- ifelse(grepl("PEAKS", bmark_path), "MAGIX",
                  gsub(".*_([A-H][0-1][0-9])_.*", "\\1", dirname(bmark_path)))
-  selex_plate <- ifelse(grepl("MAGIX", bmark_path), "MAGIX",
+  selex_plate <- ifelse(grepl("PEAKS", bmark_path), "MAGIX",
                         gsub(".*(YW[TUV])_.*", "\\1", bmark_path))
   exp_id <- basename(dirname(bmark_path))
   
@@ -42,3 +45,5 @@ if (reimport_bmarks) {
 } else{
   benchmark_summ_df <- read_csv(file.path(proj_dir, "../motif_benchmark_summary_df.csv.gz"))
 }
+
+

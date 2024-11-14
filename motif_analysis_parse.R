@@ -115,10 +115,49 @@ selex_results <- read_csv(file.path(proj_dir, "/../TEHMM_HT-SELEX_Results.csv"))
   mutate(Arttu_call = ifelse(is.na(Arttu_call) & Exp_Type == "HT-SELEX", "fail", 
                              Arttu_call)) # assume NAs (uneval, altho I think he did look at them) are fails
 
+## deal with MAGIX peaks-based motifs
+match_genes <- function(gene_nm){
+  match <- grep(gene_nm, unique(selex_results$`Descriptive name`), value = T)
+  if(length(match) == 1){
+    tibble(gene = gene_nm, `Descriptive name` = match)
+  } else{
+    tibble(gene = gene_nm, `Descriptive name` = NA) %>%
+      mutate(`Descriptive name` = 
+             case_when(gene == "ACOM031257_PA_1" ~ 
+                         "ACOM031257-PA.1_151571_4_hAT-Tip100_Anopheles_coluzzii",
+                       gene == "NAIF1" ~ 
+                       "ENSP00000362170.4_NAIF1_PIF-Harbinger_Human",
+                       gene == "POGZ" ~
+                         "ENSP00000357856.2_POGZ_TcMar-Tc2_Human",
+                       gene == "UTF1" ~
+                         "ENSP00000305906.2_UTF1_PIF-Harbinger_Human",
+                       gene == "ZBED6" ~
+                         "ENSP00000447879.1_ZBED6_hAT-Ac_Human",
+                       gene == "ZNF862" ~
+                         "ENSP00000223210.4_ZNF862_hAT-Tip100_Human"
+                       ))
+  }
+}
+peak_rocs <- benchmark_summ_df %>% filter(cycle == "MAGIX") %>%
+  mutate(gene = gsub("target_|_LTR.*", "", pTH))
+peak_rocs <- peak_rocs %>% 
+  left_join(peak_rocs %>% pull(gene) %>% unique() %>%
+  map(match_genes) %>% list_rbind()) %>% 
+  select(-gene)
+selex_res_bmark_peaks <- 
+  left_join(selex_results %>% 
+              filter(Exp_Type == "GHT-SELEX", selex_plate != "YWT") %>%
+              select(-Well, -Exp_cycle1_identifier, -Exp_Id) %>% unique(), 
+            peak_rocs %>% select(-pTH, -selex_plate) %>% unique())
+
 ## join with selex_results
-selex_res_bmark <- left_join(selex_results, benchmark_summ_df, 
-                             by = c("pTH", "Well", "selex_plate")) %>% 
-  mutate(ROC_fil = paste0(exp_id, "/", motif, "_ROC.tsv"),
+selex_res_bmark_reads <- left_join(selex_results, benchmark_summ_df %>% 
+                               filter(cycle != "MAGIX"), 
+                             by = c("pTH", "Well", "selex_plate"))
+selex_res_bmark <- bind_rows(selex_res_bmark_reads, selex_res_bmark_peaks) %>%
+  unique() %>% 
+  mutate(ROC_fil = paste0(exp_id, "/", motif, "_", 
+                          gsub("\\.", "", as.character(bmark_pos_frac)), "_ROC.tsv"),
          Exp_Id = ifelse(is.na(Exp_Id), paste0(pTH, "_", selex_plate), Exp_Id))
 
 ## calculate partial AUROC values

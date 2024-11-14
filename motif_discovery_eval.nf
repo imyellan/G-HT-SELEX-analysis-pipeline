@@ -82,6 +82,22 @@ process SPLIT {
         """
 }
 
+process KNEEDLE_PEAKS {
+    conda '/home/hugheslab1/iyellan/micromamba'
+    input:
+        tuple path(bed), val(baseName)
+
+    output:
+        tuple path("knee_filt_peaks.bed"), val(baseName)
+
+    publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
+
+    script:
+        """
+        $HOME/TEHMM_proj/selex_motif_scripts/magix_knee_filter.py $bed
+        """
+}
+
 process SPLIT_PEAKS {
     conda '/home/hugheslab1/iyellan/micromamba'
     input:
@@ -118,7 +134,13 @@ process EXTRACT_TOP_PEAKS {
 
     script:
         """
-        sort -k5 -gr $shuff_bed | head -n $nPeaks \
+        if [[ $nPeaks -gt \$(cat $shuff_bed | wc -l) ]]; then
+            # if nPeaks is greater than the number of peaks in the bed file, use the total # of peaks in the bed file
+            num_peaks=\$(cat $shuff_bed | wc -l)
+        else
+            num_peaks=$nPeaks
+        fi
+        sort -k5 -gr $shuff_bed | head -n \$num_peaks \
         | awk 'BEGIN{OFS=FS="\t"} {print \$1,\$2,\$3,\$4,\$5}' > top_${nPeaks}.bed
         bedtools getfasta -fi \$HOME/data/hg38.fa \
         -bed top_${nPeaks}.bed -fo top_${nPeaks}.fasta
@@ -318,6 +340,9 @@ workflow {
     }
     .set { ght_peak_beds }
 
+    // use kneedle method to subset the ght peak bed files to "real" peaks
+    kneedle_peaks = KNEEDLE_PEAKS(ght_peak_beds)
+
     // combine the merged GHT fastq files with the ht-selex fastq files for catting
     ht_ght_selex_for_catting = ht_selex_for_catting.mix(ght_merged)
 
@@ -348,7 +373,7 @@ workflow {
     split = SPLIT(deduped_and_merged)
 
     // split the ght peak bed file into training and testing sets
-    split_peaks = SPLIT_PEAKS(ght_peak_beds)
+    split_peaks = SPLIT_PEAKS(kneedle_peaks)
     // find the 10,000 sequences with the highest k-mer enrichment scores in the training set
     //// create a kmer length channel
     kmer_lens = Channel.of(5, 8)
@@ -411,5 +436,6 @@ workflow {
     // Run the benchmarking process with the combined motifs
     MOTIF_BENCHMARK(pfm_bmark_prep_top_frac_tuples_reads)
     MOTIF_BENCHMARK_PEAKS(pfm_bmark_prep_tuples_peaks)
+    // create logos from the pfm files
     LOGO_MAKER(pfm_tuples)
     }
