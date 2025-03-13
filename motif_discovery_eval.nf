@@ -2,30 +2,21 @@
 
 // params.inputDir1 = "${HOME}/nextflow_test"
 // params.inputDir2 = "${HOME}/nextflow_test"
-params.ywuv_htselex = "/home/hughespub/SELEX_Data/HT-SELEX_Fastqs_Ready_For_SRA_etc/YWUV_and_RoziHadiAttackATAC_240711_A00546_0178_AH57KMDRX5"
-params.ywt_htselex = "/home/hughespub/finishTF/YWT_Mostly_Isaac/FinalFastq_Trimmed_and_Filtered_Ready"
-params.ght_input = "/home/hughespub/SELEX_Data/GHT-SELEX_Fastqs_Ready_For_SRA_etc/YWUV_and_RoziHadiAttackATAC_240711_A00546_0178_AH57KMDRX5"
-params.ght_peaks = "/home/hughespub/ahcorcha/Transposone_TFs_MAGIX_peaks_08_11_24"
-params.outputDir = "${HOME}/TEHMM_proj/analysis/selex_results/motif_pipeline"
+// params.ywuv_htselex = "/home/hughespub/SELEX_Data/HT-SELEX_Fastqs_Ready_For_SRA_etc/YWUV_and_RoziHadiAttackATAC_240711_A00546_0178_AH57KMDRX5"
+// params.ywt_htselex = "/home/hughespub/finishTF/YWT_Mostly_Isaac/FinalFastq_Trimmed_and_Filtered_Ready"
+// params.yww_htselex = "/home/hughespub/SELEX_Data/HT-SELEX_Fastqs_Ready_For_SRA_etc/HTSELEX_BcorrectFilteredTrimmed"
+// // params.ght_input1 = "/home/hughespub/SELEX_Data/GHT-SELEX_Fastqs_Ready_For_SRA_etc/YWUV_and_RoziHadiAttackATAC_240711_A00546_0178_AH57KMDRX5"
+// params.ght_input = "/home/hughespub/SELEX_Data/GHT-SELEX_Fastqs_Ready_For_SRA_etc"
+// params.ght_peaks = "/home/hughespub/ahcorcha/Transposone_TFs_MAGIX_peaks_08_11_24"
+// params.outputDir = "${HOME}/TEHMM_proj/analysis/selex_results/motif_pipeline"
 
 include { MOTIF_BENCHMARK; BENCHMARK_PREP; LOGO_MAKER; BENCHMARK_PREP_PEAKS; MOTIF_BENCHMARK_PEAKS } from './motif_benchmark.nf'
+include { MOTIF_DISCOVERY; RUN_BEESEM; RUN_DIMONT_HTS; RUN_DIMONT_GHT } from './motif_finders.nf'
+include { JOIN_GHT_READS; RUN_BOWTIE; PEAK_CALL; KNEEDLE_PEAKS; SPLIT_PEAKS; EXTRACT_TOP_PEAKS } from './peak_processing.nf'
 
-process JOIN_GHT_READS {
-    conda '/home/hugheslab1/iyellan/micromamba'
-    label 'merge_reads'
-    input:
-        tuple val(baseName), val(cycle), val(exp_id), path(pair1), path(pair2)
-    output:
-        tuple val(baseName), val(cycle), val(exp_id), path("ght_merged_${cycle}.fastq.gz")
-    script:
-        """
-        bbmerge-auto.sh in1=$pair1 in2=$pair2 out=ght_merged_${cycle}.fastq.gz rem k=62 extend2=50 ecct \
-        -Xmx10939m
-        """
-}
 
 process CAT_FASTQ {
-    conda '/home/hugheslab1/iyellan/micromamba'
+    conda "${HOME}/micromamba"
     input:
         tuple val(basenames), val(cycles), val(exp_id), path(fastqs) // to deal with ght fastqs with identical names since they're the read pair joining step
 
@@ -39,10 +30,30 @@ process CAT_FASTQ {
         """
 }
 
+process DIMONT_HT_PREP {
+    conda "${HOME}/micromamba"
+    input:
+        tuple val(basenames), val(cycles), val(exp_id), path(fastqs)
+    
+    // output the merged fastq file, and the exp_id with "merged_dimont" appended
+    output:
+        tuple path("merged_dimont.fa.gz"), val("${exp_id}_merged_dimont")
+
+    script:
+        """
+        ## extract equal number of random reads from each (190k to account for 
+        ## subsequent split into test and train)
+        dimont_hts_format.sh 1 ${fastqs[0]} > merged_dimont.fa
+        dimont_hts_format.sh 2 ${fastqs[1]} >> merged_dimont.fa
+        dimont_hts_format.sh 3 ${fastqs[2]} >> merged_dimont.fa
+        gzip merged_dimont.fa
+        """
+}
+
 // Define the process to deduplicate the fastq files
 process DE_DUP {
     label 'dedupe'
-    conda '/home/hugheslab1/iyellan/micromamba'
+    conda "${HOME}/micromamba"
     input:
         tuple path(fastq), val(baseName)
 
@@ -60,9 +71,9 @@ process DE_DUP {
         """
 }
 
-// Use reformat.sh to convert fastq to fasta and split into 70% train and 30% test
+// Use seqkit to split into 70% train and 30% test
 process SPLIT {
-    conda '/home/hugheslab1/iyellan/micromamba'
+    conda "${HOME}/micromamba"
     label 'high_mem'
     input:
         tuple path(fastq), val(baseName)
@@ -72,7 +83,7 @@ process SPLIT {
         tuple path("test.fastq.gz"), val(baseName), emit: test
 
     publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
-
+    
     script:
         """
         seqkit shuffle --rand-seed 1 $fastq -o shuffled.fastq.gz
@@ -82,76 +93,41 @@ process SPLIT {
         """
 }
 
-process KNEEDLE_PEAKS {
-    conda '/home/hugheslab1/iyellan/micromamba'
+process SPLIT_FASTA {
+    conda "${HOME}/micromamba"
+    label 'high_mem'
     input:
-        tuple path(bed), val(baseName)
+        tuple path(fasta), val(baseName)
 
     output:
-        tuple path("knee_filt_peaks.bed"), val(baseName)
+        tuple path("train.fasta.gz"), val(baseName), emit: train
+        tuple path("test.fasta"), val(baseName), emit: test
 
     publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
 
     script:
         """
-        $HOME/TEHMM_proj/selex_motif_scripts/magix_knee_filter.py $bed
+        gunzip -c $fasta | $HOME/scripts/fasta_linearize.sh \
+        > shuffed_fasta.txt
+        n_seqs=\$(cat shuffed_fasta.txt | wc -l)
+
+        n_train=\$(printf "%.0f" \$(echo "\$n_seqs * 0.7" | bc -l))
+        n_test=\$((n_seqs-n_train))
+
+        head -n \$n_train shuffed_fasta.txt | awk 'BEGIN{OFS="\\n"} {print ">"\$1,\$2}' \
+        | sed 's/,/ /g' > train.fasta
+        gzip -f train.fasta
+        tail -n \$n_test shuffed_fasta.txt | awk 'BEGIN{OFS="\\n"} {print ">"\$1,\$2}' \
+        | sed 's/,/ /g' > test.fasta # for some reason pwm-eval doesn't work if the dimont fasta is gzipped
         """
 }
 
-process SPLIT_PEAKS {
-    conda '/home/hugheslab1/iyellan/micromamba'
-    input:
-        tuple path(bed), val(baseName)
-
-    output:
-        tuple path("train.bed"), val(baseName), emit: train_bed
-        tuple path("test.bed"), val(baseName), emit: test_bed
-    
-    publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
-
-    script:
-        """
-        n_lines=\$(cat $bed | wc -l)
-        pos_lines=\$(printf "%.0f" \$(echo "\$n_lines * 0.7" | bc -l))
-        # round up to nearest integer
-        neg_lines=\$((n_lines - pos_lines)) 
-        shuf <(tail -n +2 $bed) > shuffled.bed
-        head -n \$pos_lines shuffled.bed > train.bed
-        tail -n \$neg_lines shuffled.bed > test.bed
-        """
-}
-
-process EXTRACT_TOP_PEAKS {
-    conda '/home/hugheslab1/iyellan/micromamba'
-    //nPeaks in the output can serve as a placeholder instead of kmerLen
-    input:
-        tuple path(shuff_bed), val(baseName), val(nPeaks)
-
-    output:
-        tuple path("top_${nPeaks}.fasta"), val(baseName), val(nPeaks)
-
-    publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
-
-    script:
-        """
-        if [[ $nPeaks -gt \$(cat $shuff_bed | wc -l) ]]; then
-            # if nPeaks is greater than the number of peaks in the bed file, use the total # of peaks in the bed file
-            num_peaks=\$(cat $shuff_bed | wc -l)
-        else
-            num_peaks=$nPeaks
-        fi
-        sort -k5 -gr $shuff_bed | head -n \$num_peaks \
-        | awk 'BEGIN{OFS=FS="\t"} {print \$1,\$2,\$3,\$4,\$5}' > top_${nPeaks}.bed
-        bedtools getfasta -fi \$HOME/data/hg38.fa \
-        -bed top_${nPeaks}.bed -fo top_${nPeaks}.fasta
-        """
-}
 
 // Use the GRECO-BIT folk's k-mer enrichment script to subset the training data fastq 
 // to the 10,000 sequences with the highest k-mer enrichment scores at both 5 and 10 kmer lengths
 process KMER_ENRICH {
     label 'kmer_enr'
-    conda '/home/hugheslab1/iyellan/micromamba'
+    conda "${HOME}/micromamba"
     input:
         tuple path(fastq), val(baseName), val(kmerLen)
 
@@ -208,234 +184,327 @@ process SEQ_PREP {
 
 }
 
-process MOTIF_DISCOVERY {
-    label 'multithread'
-    conda '/home/hugheslab1/iyellan/micromamba'
-
-    input:
-        tuple path(fasta), val(baseName), val(kmerLen), val(motifCaller)
-
-    output:
-        tuple path("${motifCaller}_out_${kmerLen}/"), val(baseName), val(kmerLen)
-
-    publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
-
-    script:
-        if("${motifCaller}" == "meme")
-            """
-            meme $fasta -oc meme_out_${kmerLen}/ -minw 5 -maxw 20 -p 4 -dna -nmotifs 3
-            $HOME/TEHMM_proj/selex_motif_scripts/meme_xml_parse.py meme_out_${kmerLen}/meme.xml
-            """
-        
-        else if("${motifCaller}" == "streme")
-            """
-            streme --p $fasta --oc streme_out_${kmerLen}/ --minw 5 --maxw 20 --neval 40 --nref 8 --niter 25 --dna
-            $HOME/TEHMM_proj/selex_motif_scripts/meme_xml_parse.py streme_out_${kmerLen}/streme.xml
-            """
-        
-        else if("${motifCaller}" == "homer")
-            """
-            fasta-shuffle-letters -kmer 2 -seed 42 $fasta > dummy_file
-            homer2 denovo -i $fasta -p 4 -b dummy_file -len 6 -o homer_out_6.txt
-            homer2 denovo -i $fasta -p 4 -b dummy_file -len 10 -o homer_out_10.txt
-            homer2 denovo -i $fasta -p 4 -b dummy_file -len 14 -o homer_out_14.txt
-            for i in 6 10 14; do
-                n_lines=\$((i+1))
-                head -n \${n_lines} homer_out_\${i}.txt | tail -n +2 > homer_out_\${i}_1.pfm
-                head -n \$((n_lines*2)) homer_out_\${i}.txt | tail -n \$((n_lines - 1)) > homer_out_\${i}_2.pfm
-            done
-            mkdir -p homer_out_${kmerLen}
-            mv homer_out_*.txt homer_out_*.pfm homer_out_${kmerLen}/
-            """
-}
-
-process RUN_BEESEM {
-    conda '/home/hugheslab1/iyellan/micromamba/envs/py27_env'
-    label 'RUN_BEESEM'
-    input:
-        tuple path(fasta), val(baseName), val(kmerLen)
-    
-    output:
-        tuple path("beesem_out_${kmerLen}/"), val(baseName), val(kmerLen), emit: beesem
-    
-    publishDir "${params.outputDir}/${baseName}", mode: 'copy', overwrite: true
-
-    script:
-        """
-        $HOME/scripts/fasta_linearize.sh $fasta \
-        | awk -F"\t" '{print \$2}' | uniq -c | awk 'BEGIN{OFS="\t"} {print toupper(\$2),\$1}' \
-        > beesem_formatted.txt
-        python $HOME/software/BEESEM/beesem.py -o beesem_out_${kmerLen} "${baseName}" beesem_formatted.txt
-        ## parse the output
-        beesem_pfm=\$(ls beesem_out_${kmerLen}/"${baseName}"_rep=1_phs=10/results/pfm_*.txt)
-        tail -n +3 \${beesem_pfm} > beesem_out_${kmerLen}/beesem_rfmt.pfm
-        """
-}
-
-
-
 // run DE_DUP and SPLIT as workflow
-workflow {
-     ////   HT READ PROCESSING /////////
-    // Channel for individual HT-SELEX files
-    Channel
-    .fromPath( ["${params.ywuv_htselex}/*.fastq.gz", "${params.ywt_htselex}/*40N*_pTH*.fastq.gz", 
-    "${params.ywt_htselex}/*40N*_UT380*.fastq.gz"] )
-    .map {fastq ->
-        def baseName = fastq.getSimpleName()
-        tuple(fastq, baseName)
-    }
-    .set { ht_fastq_tuples_individual }
+workflow HTSELEX {
+    take:
+        inputDir
+    
+    main:
+        ////   HT READ PROCESSING /////////
+        // Channel for individual HT-SELEX files
+        Channel
+        .fromPath( ["${params.ywuv_htselex}/*.fastq.gz", "${params.ywt_htselex}/*40N*_pTH*.fastq.gz", 
+        "${params.ywt_htselex}/*40N*_UT380*.fastq.gz", "${params.yww_htselex}/*.fastq.gz"] )
+        .map {fastq ->
+            def baseName = fastq.getSimpleName()
+            tuple(fastq, baseName)
+        }
+        .set { ht_fastq_tuples_individual }
 
-    // Channel for YWU/V HT-SELEX fastq files that are to be catted
-    ywuv_for_catting = Channel
-        .fromPath( ["${params.ywuv_htselex}/*.fastq.gz"] )
-        .map { file -> 
+        // Channel for YWU/V HT-SELEX fastq files that are to be catted
+        ywuv_for_catting = Channel
+            .fromPath( ["${params.ywuv_htselex}/*.fastq.gz"] )
+            .map { file -> 
+                // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
+                def baseName = file.getSimpleName()
+                def cycle = baseName.split('_')[1..2].join('_')  // e.g., A_1
+                def exp_id = baseName.split('_')[0,3..5].join('_') // excluding the cycle and SXXX
+
+                tuple(baseName, cycle, exp_id, file)
+            }
+
+        // Channel for YWT fastq files to be catted; requires different processing
+        ywt_for_catting = Channel
+            .fromPath( ["${params.ywt_htselex}/*40N*_pTH*.fastq.gz", 
+            "${params.ywt_htselex}/*40N*_UT380*.fastq.gz"] )
+            .map { file -> 
+                // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
+                def baseName = file.getSimpleName()
+                def cycle = baseName.split('_')[4]  // e.g., A_1
+                def exp_id = baseName.split('_')[0..3].join('_') // excluding the cycle and SXXX
+
+                tuple(baseName, cycle, exp_id, file)
+            }
+        
+        // Channel for YWW HT-SELEX fastq files to be catted; requires different processing
+        yww_for_catting = Channel
+            .fromPath( ["${params.yww_htselex}/*_pTH*.fastq.gz"] )
+            .map { file -> 
+                // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
+                def baseName = file.getSimpleName()
+                def cycle = baseName.split('_')[1]  // e.g., A_1
+                def exp_id = baseName.split('_')[2..5].join('_') // excluding the cycle and SXXX
+
+                tuple(baseName, cycle, exp_id, file)
+            }
+        // Combine the two HT-SELEX catting channels
+        ht_selex_for_catting = ywuv_for_catting.mix(ywt_for_catting).mix(yww_for_catting)
+
+        // combine the merged GHT fastq files with the ht-selex fastq files for catting
+        ht_ght_selex_for_catting = ht_selex_for_catting
+
+        // also create separate ght channel of individual ght fastqs for deduplication
+        // ght_individual = ght_merged.map { baseName, cycle, exp_id, merged_fq ->
+        //     tuple(merged_fq, baseName)
+        // }
+        //// Create catted fastq files for HT-SELEX and GHT-SELEX across cycles ////
+        // group by exp_id
+        ht_ght_selex_for_catting_grouped = ht_ght_selex_for_catting.groupTuple(by:2)
+        // concatenate the fastqs for each group
+        catted_fqs = CAT_FASTQ(ht_ght_selex_for_catting_grouped)
+        
+        // also concatenate ht selex reads separately, for motif finding with dimont-hts
+        ht_selex_for_catting_grouped = ht_selex_for_catting.groupTuple(by:2)
+        dimont_hts_fas = DIMONT_HT_PREP(ht_selex_for_catting_grouped)
+
+        //// Handling individual cycles
+        // deduplicate the HT-SELEX fastqs for individual cycles
+        deduped_ht_selex = DE_DUP(ht_fastq_tuples_individual)
+
+        // mix the deduped fastq_tuples with the ght_individuals into a single channel
+        ht_ght_individual = deduped_ht_selex//.mix(ght_individual)
+
+        // finally, mix the individual cycle fqs with the catted_fqs into a single channel,
+        // because the concatenated fastq files are expected to have duplicate sequences across cycles
+        // so bypassing deduplication for the concatenated fastqs and GHT fastqs
+        deduped_and_merged = ht_ght_individual.mix(catted_fqs)
+
+        // split the fastqs into training and testing sets
+        split = SPLIT(deduped_and_merged)
+
+        // also split the dimont fastas
+        dimont_hts_split = SPLIT_FASTA(dimont_hts_fas)
+
+        // find the 10,000 sequences with the highest k-mer enrichment scores in the training set
+        //// create a kmer length channel
+        kmer_lens = Channel.of(5, 8)
+        train_kmer_lens = split.train.combine(kmer_lens)
+
+        // divide train_kmer_lens channel based on if basename contains "GHT" or not
+        ht_train_kmer_lens = train_kmer_lens.filter { fastq, baseName, kmerLen ->
+            !baseName.contains("GHT")
+        }
+        // run the kmer enrichment process
+        kmerEnr = KMER_ENRICH(ht_train_kmer_lens)
+        unzipped = SEQ_PREP(kmerEnr)
+
+        motifs = MOTIF_FINDERS(unzipped)
+        // dimont needs to be run separately, because it uses all reads as input
+        dimont = MOTIFS_DIMONT(dimont_hts_split)
+        // mix the motif finding results together
+        motif_dir_tuples = motifs.mix(dimont)
+
+        // benchmark the motifs
+        MOTIF_BENCHMARK_WORKFLOW(motif_dir_tuples)
+}
+
+workflow GHTPEAKCALLING {
+    take:
+        inputDir
+    
+    main:
+        println "Input directory: ${inputDir}"
+
+        Channel
+            .fromFilePairs("${inputDir}/GHT0*_Cyc*Human_*_YWW_*R{1,2}_001.fastq.gz", flat: true)
+            .map { grouping_key, pair1, pair2  -> 
+                // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
+                def baseName = pair1.getSimpleName()
+                def cycle = baseName.split('_')[1].join('_')  // e.g., A_1
+                def exp_id = baseName.split('_')[0,2..6].join('_') // excluding the cycle and SXXX
+                tuple(baseName, pair1, pair2)
+            }
+            .set { ght_fastq_tuples }
+        // CHANNEL FOR GHT CONTROLS
+        Channel
+        .fromFilePairs("${inputDir}/*Naive*Human*R{1,2}.fastq.gz", flat: true)
+        .map { grouping_key, pair1, pair2  -> 
             // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
-            def baseName = file.getSimpleName()
-            def cycle = baseName.split('_')[1..2].join('_')  // e.g., A_1
-            def exp_id = baseName.split('_')[0,3..5].join('_') // excluding the cycle and SXXX
+            def baseName = pair1.getSimpleName()
+            tuple("GHT_HUMAN_CONTROL", pair1, pair2)
+        }
+        .set { ght_control_fastq_tuples }
+        
+        // MAP GHT FASTQ FILES TO THE HUMAN GENOME WITH BOWTIE
+        ght_mapped_bams = RUN_BOWTIE(ght_fastq_tuples.mix(ght_control_fastq_tuples))
 
-            tuple(baseName, cycle, exp_id, file)
+        // SEPARATE CONTROLS FROM EXPERIMENTS
+        ght_mapped_bam = ght_mapped_bams.filter { bam, baseName ->
+            !baseName.contains("GHT_HUMAN_CONTROL")
+        }
+        ght_control_bam = ght_mapped_bams.filter { bam, baseName ->
+        baseName.contains("GHT_HUMAN_CONTROL")
         }
 
-    // Channel for YWT fastq files to be catted; requires different processing
-    ywt_for_catting = Channel
-        .fromPath( ["${params.ywt_htselex}/*40N*_pTH*.fastq.gz", 
-        "${params.ywt_htselex}/*40N*_UT380*.fastq.gz"] )
-        .map { file -> 
-            // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
-            def baseName = file.getSimpleName()
-            def cycle = baseName.split('_')[4]  // e.g., A_1
-            def exp_id = baseName.split('_')[0..3].join('_') // excluding the cycle and SXXX
+        // COMBINE ALL BAM FILES WITH THE SAME BASENAME INTO A TUPLE
+        ght_mapped_bam_tuples = ght_mapped_bam.groupTuple(by:1)
+        ght_control_bam_tuples = ght_control_bam.groupTuple(by:1)
 
-            tuple(baseName, cycle, exp_id, file)
-        }
-    // Combine the two HT-SELEX catting channels
-    ht_selex_for_catting = ywuv_for_catting.mix(ywt_for_catting)
+        // CALL PEAKS WITH MACS3
+        ght_macse_peaks = PEAK_CALL(ght_mapped_bam_tuples.combine(ght_control_bam_tuples))
 
-    ////   GHT READ PROCESSING /////////
+    emit:
+        ght_macse_peaks
+}
+
+workflow GHTSELEX {
+    ////   GHT READ PROCESSING - CALL PEAKS, SPLIT PREAKS, EXTRACT PEAK SEQS /////////
     // Create channel of GHT fastq files, associate pairs of files with the same exp_id
-    Channel
-    .fromFilePairs("${params.ght_input}/YW*GHT_Human_eGFP_IVT_*_R{1,2}_001.fastq.gz", flat: true)
-    .map { grouping_key, pair1, pair2  -> 
-        // Extract cycle (A_1, A_2, etc.) and unique identifier (e.g., pTH14647_TT40NCTCGTC_eGFP_IVT_SXXX)
-        def baseName = pair1.getSimpleName()
-        def cycle = baseName.split('_')[1..2].join('_')  // e.g., A_1
-        def exp_id = baseName.split('_')[0,3..5].join('_') // excluding the cycle and SXXX
+    take:
+        inputDir
+    main:
+        // if input is ght fastq, run peak calling
+        if("${params.inputType}" == "fastq"){
+            ght_peak_beds = GHTPEAKCALLING(inputDir)
+        }
+        else if("${params.inputType}" == "peaks"){
+            Channel
+            .fromPath("${params.inputDir}/*/*_LTR_results_all_with_eFDR.bed")
+            .map { bed ->
+            def baseName = bed.getSimpleName() + "_PEAKS"
+            def peakSetType = "full"
+            tuple(bed, baseName, peakSetType)
+            }
+            .set { full_peaks }
 
-        tuple(baseName, cycle, exp_id, pair1, pair2)
-    }
-    .set { ght_fastq_tuples }
+            // peak file processing
+            // use kneedle method to subset the ght peak bed files to "real" peaks
+            kneedle_peaks = KNEEDLE_PEAKS(full_peaks)
+
+            // mix the kneedle and full peak bed files
+            ght_peak_beds = kneedle_peaks.mix(full_peaks)
+        }
+        
+        // Run the JOIN_GHT_READS process on the GHT fastq files
+        // ght_merged = JOIN_GHT_READS(ght_fastq_tuples)
+        
+        // split the ght peak bed file into training and testing sets
+        // do for both kneedle-filtered (for most motif finders) and full peak sets (for dimont)
+        // macse called peaks can be run on all the motif finders
+        split_peaks_all = SPLIT_PEAKS(ght_peak_beds)
+
+        split_peaks_train = split_peaks_all.train_bed.filter { bed, baseName, peakSetType ->
+            peakSetType =="kneedle" || peakSetType == "macs"
+        }
+        split_peaks_test = split_peaks_all.test_bed.filter { bed, baseName, peakSetType ->
+            peakSetType =="kneedle" || peakSetType == "macs"
+        }
+        dimont_split_peaks_train = split_peaks_all.train_bed.filter { bed, baseName, peakSetType ->
+            peakSetType =="full" || peakSetType == "macs"
+        }
+        dimont_split_peaks_test = split_peaks_all.test_bed.filter { bed, baseName, peakSetType ->
+            peakSetType =="full" || peakSetType == "macs"
+        }
+
+        // grab top scoring peaks from the ght peak bed file, extract fastas
+        n_peaks = Channel.of(50, 200, 500)
+        ght_peaks_topn = split_peaks_train.combine(n_peaks)
+        ght_peaks_topn_fas = EXTRACT_TOP_PEAKS(ght_peaks_topn)
+
+        motifs = MOTIF_FINDERS(ght_peaks_topn_fas)
+        // run dimont ght on the ght peaks (also extracts fasta sequences)
+        dimont = MOTIFS_DIMONT(dimont_split_peaks_train)
+        motif_dir_tuples = motifs.mix(dimont)
+
+        // benchmark the motifs
+        test_set = split_peaks_test.mix(dimont_split_peaks_test)
+        MOTIF_BENCHMARK_WORKFLOW(motif_dir_tuples, test_set)
+}
+
+workflow MOTIFS_DIMONT {
+    take: dimontIn
     
-    // Run the JOIN_GHT_READS process on the GHT fastq files
-    ght_merged = JOIN_GHT_READS(ght_fastq_tuples)
-    
-    // GHT peak file processing
-    Channel
-    .fromPath("${params.ght_peaks}/*/*_LTR_results_all_with_eFDR.bed")
-    .map { bed ->
-        def baseName = bed.getSimpleName() + "_PEAKS"
-        tuple(bed, baseName)
-    }
-    .set { ght_peak_beds }
+    main:
+        if(params.inputExp == "HT") {
+            dimont = RUN_DIMONT_HTS(dimontIn)
+        }
+        else if(params.inputExp == "GHT") {
+            dimont = RUN_DIMONT_GHT(dimontIn)
+        }
+    emit: 
+        dimont
+}
 
-    // use kneedle method to subset the ght peak bed files to "real" peaks
-    kneedle_peaks = KNEEDLE_PEAKS(ght_peak_beds)
+workflow MOTIF_FINDERS {
+    take: fastas
 
-    // combine the merged GHT fastq files with the ht-selex fastq files for catting
-    ht_ght_selex_for_catting = ht_selex_for_catting.mix(ght_merged)
+    main:
+        // create channel of motif caller types, combine with unzipped channel as 5th item in tuple
+        motif_callers = Channel.of( "meme", "streme", "homer" )
+        fastas_motif_callers = fastas.combine(motif_callers)
+        motifs = MOTIF_DISCOVERY(fastas_motif_callers)
+        // beesem needs to be run separately because it requires a different conda environment
+        beesem = RUN_BEESEM(fastas_motif_callers)
 
-    // also create separate ght channel of individual ght fastqs for deduplication
-    ght_individual = ght_merged.map { baseName, cycle, exp_id, merged_fq ->
-        tuple(merged_fq, baseName)
-    }
+        // mix the motif finding results together
+        motif_dir_tuples = motifs.mix(beesem)
 
-    //// Create catted fastq files for HT-SELEX and GHT-SELEX across cycles ////
-    // group by exp_id
-    ht_ght_selex_for_catting_grouped = ht_ght_selex_for_catting.groupTuple(by:2)
-    // concatenate the fastqs for each group
-    catted_fqs = CAT_FASTQ(ht_ght_selex_for_catting_grouped)
+    emit:
+        motif_dir_tuples
+}
 
-    //// Handling individual cycles
-    // deduplicate the HT-SELEX fastqs for individual cycles
-    deduped_ht_selex = DE_DUP(ht_fastq_tuples_individual)
+workflow MOTIF_BENCHMARK_WORKFLOW {
+    take: 
+        motif_dir_tuples
+        test_set
 
-    // mix the deduped fastq_tuples with the ght_individuals into a single channel
-    ht_ght_individual = deduped_ht_selex.mix(ght_individual)
+    main:
+        // prepare the benchmarking process
+        //// channel of fractions of positives to use for evaluation
+        top_fracs = Channel.of(0.01, 0.1, 0.5)
 
-    // finally, mix the individual cycle fqs with the catted_fqs into a single channel,
-    // because the concatenated fastq files are expected to have duplicate sequences across cycles
-    // so bypassing deduplication for the concatenated fastqs and GHT fastqs
-    deduped_and_merged = ht_ght_individual.mix(catted_fqs)
-
-    // split the fastqs into training and testing sets
-    split = SPLIT(deduped_and_merged)
-
-    // split the ght peak bed file into training and testing sets
-    split_peaks = SPLIT_PEAKS(kneedle_peaks)
-    // find the 10,000 sequences with the highest k-mer enrichment scores in the training set
-    //// create a kmer length channel
-    kmer_lens = Channel.of(5, 8)
-    train_kmer_lens = split.train.combine(kmer_lens)
-
-    // divide train_kmer_lens channel based on if basename contains "GHT" or not
-    ght_train_kmer_lens = train_kmer_lens.filter { fastq, baseName, kmerLen ->
-        baseName =~ /GHT/
-    }
-    ht_train_kmer_lens = train_kmer_lens.filter { fastq, baseName, kmerLen ->
-        !baseName.contains("GHT")
-    }
-    // run the kmer enrichment process
-    kmerEnr_ht = KMER_ENRICH(ht_train_kmer_lens)
-    kmerEnr_ght = KMER_ENRICH_MULTITHREAD(ght_train_kmer_lens)
-    kmerEnr = kmerEnr_ht.mix(kmerEnr_ght)
-    unzipped = SEQ_PREP(kmerEnr)
-
-    // grab top scoring peaks from the ght peak bed file, extract fastas
-    n_peaks = Channel.of(50, 200, 500)
-    ght_peaks_topn = split_peaks.train_bed.combine(n_peaks)
-    ght_peaks_topn_fas = EXTRACT_TOP_PEAKS(ght_peaks_topn)
-
-    // mix the peak fasta files with the read fastas
-    unzipped_ght_peaks = unzipped.mix(ght_peaks_topn_fas)
-
-    // create channel of motif caller types, combine with unzipped channel as 5th item in tuple
-    motif_callers = Channel.of( "meme", "streme", "homer" )
-    unzipped_motif_callers = unzipped_ght_peaks.combine(motif_callers)
-    motifs = MOTIF_DISCOVERY(unzipped_motif_callers)
-    // beesem needs to be run separately because it requires a different conda environment
-    beesem = RUN_BEESEM(unzipped_ght_peaks)
-
-    // prepare the benchmarking process
-    top_fracs = Channel.of(0.01, 0.1, 0.5)
-    prep = BENCHMARK_PREP(split.test)
-    prep_peaks = BENCHMARK_PREP_PEAKS(split_peaks.test_bed.combine(top_fracs)) // top fracs are needed earlier in the peak prep stage
-    // mix the .pfm files from MEME, STREME, HOMER, and BEESEM into a single channel
-    motif_dir_tuples = motifs.mix(beesem)
-    pfm_tuples = motif_dir_tuples.map { pfm_dir, base, kmerLen ->
-        // Find the .pfm files in the MEME output directory
-        def fils = file("${pfm_dir}/*.pfm").collect()
-        // Pair each .pfm file with the base name
-        fils.collect { fil -> tuple(base, fil, kmerLen) }
+        pfm_tuples = motif_dir_tuples.map { pfm_dir, base, kmerLen ->
+            // Find the .pfm files in the MEME output directory
+            def fils = file("${pfm_dir}/*.pfm").collect()
+            // Pair each .pfm file with the base name
+            fils.collect { fil -> tuple(base, fil, kmerLen) }
         }.flatten().collate(3)
-    
-    // filter pfm_tuples to read-based and peak-based motifs
-    pfm_tuples_reads = pfm_tuples.filter { base, pfm, kmerLen ->
-        !base.contains("PEAKS")
-    }
-    pfm_tuples_peaks = pfm_tuples.filter { base, pfm, kmerLen ->
-        base =~ /PEAKS/
-    }
 
-    // Combine motif results with prep output (pairing based on order of emission)
-    pfm_bmark_prep_tuples_reads = pfm_tuples_reads.combine(prep, by: 0)
-    pfm_bmark_prep_tuples_peaks = pfm_tuples_peaks.combine(prep_peaks, by: 0)
-    // combine pfm_bmark_prep_top_frac_tuples_reads with a channel of top fractions (already done for peaks)
-    pfm_bmark_prep_top_frac_tuples_reads = pfm_bmark_prep_tuples_reads.combine(top_fracs)
-    // Run the benchmarking process with the combined motifs
-    MOTIF_BENCHMARK(pfm_bmark_prep_top_frac_tuples_reads)
-    MOTIF_BENCHMARK_PEAKS(pfm_bmark_prep_tuples_peaks)
-    // create logos from the pfm files
-    LOGO_MAKER(pfm_tuples)
+        if("${params.inputExp}" == "HT") {
+            //// create positives and negatives (dinuc shuffle) from read test set
+            prep = BENCHMARK_PREP(test_set)
+        }
+        else if("${params.inputExp}" == "GHT") {
+            // top fracs are needed earlier in the peak prep stage whereas they're used in the read evaluation stage
+            prep = BENCHMARK_PREP_PEAKS(test_set.combine(top_fracs))
+        }
+
+        // prep = BENCHMARK_PREP(split.test.mix(dimont_hts_split.test))
+        // prep_peaks = BENCHMARK_PREP_PEAKS(split_peaks_test.mix(dimont_split_peaks_test).combine(top_fracs))
+        
+
+        // filter pfm_tuples to read-based and peak-based motifs
+        // pfm_tuples_reads = pfm_tuples.filter { base, pfm, kmerLen ->
+        //     !base.contains("PEAKS")
+        // }
+        // pfm_tuples_peaks = pfm_tuples.filter { base, pfm, kmerLen ->
+        //     base =~ /PEAKS/
+        // }
+
+        // Combine motif results with prep output (pairing based on order of emission)
+        pfm_bmark_prep_tuples = pfm_tuples.combine(prep, by: 0)
+        // pfm_bmark_prep_tuples_peaks = pfm_tuples_peaks.combine(prep_peaks, by: 0)
+        // combine pfm_bmark_prep_top_frac_tuples_reads with a channel of top fractions (already done for peaks)
+
+        if("${params.inputExp}" == "HT") {
+            MOTIF_BENCHMARK(pfm_bmark_prep_tuples)
+
+        }
+        else if("${params.inputExp}" == "GHT") {
+            MOTIF_BENCHMARK_PEAKS(pfm_bmark_prep_tuples)
+
+        }
+        // Run the benchmarking process with the combined motifs
+        // create logos from the pfm files
+        LOGO_MAKER(pfm_tuples)
+}
+
+workflow {
+    /// MAIN WORFKLOW ///
+    if("${params.inputExp}" == "HT") {
+        HTSELEX("${params.inputDir}")
     }
+    else if("${params.inputExp}" == "GHT") {
+        GHTSELEX("${params.inputDir}")
+    }
+}

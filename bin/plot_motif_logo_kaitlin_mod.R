@@ -1,3 +1,5 @@
+#!/usr/bin/env Rscript
+
 library(ggseqlogo)
 library(ggplot2)
 library(universalmotif)

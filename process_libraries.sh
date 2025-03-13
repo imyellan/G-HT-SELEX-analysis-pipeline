@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # emulating https://link.springer.com/article/10.1186/s13059-020-01996-3#Sec16/,
 # the MEX paper's motif derivation method, etc etc

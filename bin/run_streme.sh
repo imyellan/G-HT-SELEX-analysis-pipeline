@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 DIR=$1
 # Loop through all files ending with .fa in the current directory
