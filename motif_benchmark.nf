@@ -29,7 +29,7 @@ process BENCHMARK_PREP_PEAKS{
     label = 'benchmark_peaks'
     input:
     // tuple path(motif_dir), val(baseName)
-        tuple path(test_bed), val(baseName), val(top_frac)
+        tuple path(test_bed), val(baseName), val(peakSetType), val(top_frac)
 
     output:
         tuple val(baseName), path("pos.fa.gz"), path("neg.fa.gz"), val(top_frac)
@@ -116,7 +116,7 @@ process MOTIF_BENCHMARK_PEAKS{
 }
 
 process LOGO_MAKER{
-    conda '/home/hugheslab1/iyellan/micromamba'
+    conda "${HOME}/micromamba"
     label = 'logo'
 
     input:
